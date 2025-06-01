@@ -4,7 +4,7 @@ namespace OCA\AlbumNotifications\Settings;
 
 use OCP\Settings\ISettings;
 use OCP\IUserSession;
-use OCP\Template;
+use OCP\AppFramework\Http\TemplateResponse;
 
 class AlbumNotificationsSettings implements ISettings {
   private $userSession;
@@ -16,9 +16,8 @@ class AlbumNotificationsSettings implements ISettings {
   public function getForm() {
     $user = $this->userSession->getUser();
     $displayName = $user ? $user->getDisplayName() : 'Unknown';
-    $template = new Template('album_notifications', 'settings');
-    $template->assign('user', $displayName);
-    return $template;
+    $parameters = ['user' => $displayName];
+    return new TemplateResponse('album_notifications', 'settings', $parameters);
   }
 
   public function getSection() {

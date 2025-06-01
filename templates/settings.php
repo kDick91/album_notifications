@@ -1,4 +1,3 @@
 <?php
-/** @var array $_ */
 ?>
-<p>Hello <?php echo htmlspecialchars($_['user']); ?></p>
+<p>Hello <?php p($user); ?></p>
