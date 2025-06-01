@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+<info>
+  <id>album_notifications</id>
+  <name>Album Notifications</name>
+  <description>A simple app for album notifications</description>
+  <version>0.1.0</version>
+  <licence>AGPL-3.0-or-later</licence>
+  <author>Your Name</author>
+  <namespace>AlbumNotifications</namespace>
+  <category>tools</category>
+  <dependencies>
+    <nextcloud min-version="31" max-version="31"/>
+  </dependencies>
+  <settings>
+    <personal>OCA\AlbumNotifications\Settings\AlbumNotificationsSettings</personal>
+    <personal-section>OCA\AlbumNotifications\Settings\AlbumNotificationsSection</personal-section>
+  </settings>
+</info>
