@@ -7,8 +7,8 @@ use OCP\IUserSession;
 use OCP\AppFramework\Http\TemplateResponse;
 use OCP\IConfig;
 use OCP\IURLGenerator;
-use OCP\DB\IDBConnection; // Added for database access
-use OCP\IRequest;
+use OCP\IDBConnection;
+use OCP\App\IAppManager;
 use Psr\Log\LoggerInterface;
 use Psr\Log\LogLevel;
 
@@ -16,8 +16,8 @@ class AlbumNotificationsSettings implements ISettings {
     private $userSession;
     private $config;
     private $urlGenerator;
-    private $connection; // Changed from IClientService to IDBConnection
-    private $request;
+    private $db;
+    private $appManager;
     private $logger;
     private $userId;
 
@@ -25,52 +25,140 @@ class AlbumNotificationsSettings implements ISettings {
         IUserSession $userSession,
         IConfig $config,
         IURLGenerator $urlGenerator,
-        IDBConnection $connection, // Replaced IClientService with IDBConnection
-        IRequest $request,
+        IDBConnection $db,
+        IAppManager $appManager,
         LoggerInterface $logger
     ) {
         $this->userSession = $userSession;
         $this->config = $config;
         $this->urlGenerator = $urlGenerator;
-        $this->connection = $connection; // Updated assignment
-        $this->request = $request;
+        $this->db = $db;
+        $this->appManager = $appManager;
         $this->logger = $logger;
         $this->userId = $userSession->getUser()->getUID();
     }
 
     public function getForm() {
         $displayName = $this->userSession->getUser()->getDisplayName();
+        $albums = [];
 
-        // Fetch albums from the database
-        $qb = $this->connection->getQueryBuilder();
-        $qb->select('a.id', 'a.name')
-           ->from('photos_albums', 'a')
-           ->where($qb->expr()->eq('a.user', $qb->createNamedParameter($this->userId)))
-           ->orWhere($qb->expr()->exists(function ($subQb) {
-               $subQb->select('1')
-                      ->from('photos_albums_collab', 'c')
-                      ->where($subQb->expr()->eq('c.album_id', 'a.id'))
-                      ->andWhere($subQb->expr()->eq('c.user_id', $subQb->createNamedParameter($this->userId)));
-           }));
+        // Try to get albums from different sources
+        $albums = array_merge(
+            $this->getMemoriesAlbums(),
+            $this->getPhotosAlbums()
+        );
 
-        try {
-            $result = $qb->executeQuery();
-            $albums = $result->fetchAll(\PDO::FETCH_ASSOC);
-        } catch (\Exception $e) {
-            $this->logger->log(LogLevel::ERROR, 'Failed to fetch albums from database: ' . $e->getMessage(), ['app' => 'album_notifications']);
-            $albums = [];
+        // Remove duplicates based on album ID
+        $uniqueAlbums = [];
+        $seenIds = [];
+        foreach ($albums as $album) {
+            if (!in_array($album['id'], $seenIds)) {
+                $uniqueAlbums[] = $album;
+                $seenIds[] = $album['id'];
+            }
         }
 
         // Get selected albums from config
         $selectedAlbumsJson = $this->config->getUserValue($this->userId, 'album_notifications', 'selected_albums', '[]');
-        $selected_albums = json_decode($selectedAlbumsJson, true);
+        $selected_albums = json_decode($selectedAlbumsJson, true) ?? [];
 
         $parameters = [
             'user' => $displayName,
-            'albums' => $albums,
+            'albums' => $uniqueAlbums,
             'selected_albums' => $selected_albums,
         ];
         return new TemplateResponse('album_notifications', 'settings', $parameters);
+    }
+
+    private function getMemoriesAlbums(): array {
+        $albums = [];
+
+        // Check if Memories app is enabled
+        if (!$this->appManager->isEnabledForUser('memories')) {
+            $this->logger->log(LogLevel::DEBUG, 'Memories app is not enabled', ['app' => 'album_notifications']);
+            return $albums;
+        }
+
+        try {
+            // Query the memories_albums table directly
+            $qb = $this->db->getQueryBuilder();
+            $qb->select('album_id', 'name')
+               ->from('memories_albums')
+               ->where($qb->expr()->eq('user', $qb->createNamedParameter($this->userId)));
+
+            $result = $qb->executeQuery();
+            while ($row = $result->fetch()) {
+                $albums[] = [
+                    'id' => 'memories_' . $row['album_id'],
+                    'name' => $row['name'] ?: 'Unnamed Album'
+                ];
+            }
+            $result->closeCursor();
+
+            $this->logger->log(LogLevel::DEBUG, 'Found ' . count($albums) . ' Memories albums', ['app' => 'album_notifications']);
+        } catch (\Exception $e) {
+            $this->logger->log(LogLevel::ERROR, 'Failed to fetch Memories albums: ' . $e->getMessage(), ['app' => 'album_notifications']);
+        }
+
+        return $albums;
+    }
+
+    private function getPhotosAlbums(): array {
+        $albums = [];
+
+        // Check if Photos app is enabled
+        if (!$this->appManager->isEnabledForUser('photos')) {
+            $this->logger->log(LogLevel::DEBUG, 'Photos app is not enabled', ['app' => 'album_notifications']);
+            return $albums;
+        }
+
+        try {
+            // Try different possible table names for Photos app albums
+            $possibleTables = ['photos_albums', 'oc_photos_albums', 'photos_album'];
+            
+            foreach ($possibleTables as $tableName) {
+                try {
+                    if ($this->tableExists($tableName)) {
+                        $qb = $this->db->getQueryBuilder();
+                        $qb->select('id', 'name', 'user')
+                           ->from($tableName)
+                           ->where($qb->expr()->eq('user', $qb->createNamedParameter($this->userId)));
+
+                        $result = $qb->executeQuery();
+                        while ($row = $result->fetch()) {
+                            $albums[] = [
+                                'id' => 'photos_' . $row['id'],
+                                'name' => $row['name'] ?: 'Unnamed Album'
+                            ];
+                        }
+                        $result->closeCursor();
+                        
+                        $this->logger->log(LogLevel::DEBUG, 'Found ' . count($albums) . ' Photos albums from table: ' . $tableName, ['app' => 'album_notifications']);
+                        break; // If we found a working table, stop trying others
+                    }
+                } catch (\Exception $e) {
+                    // Continue to next table
+                    continue;
+                }
+            }
+        } catch (\Exception $e) {
+            $this->logger->log(LogLevel::ERROR, 'Failed to fetch Photos albums: ' . $e->getMessage(), ['app' => 'album_notifications']);
+        }
+
+        return $albums;
+    }
+
+    private function tableExists(string $tableName): bool {
+        try {
+            $qb = $this->db->getQueryBuilder();
+            $qb->select($qb->createFunction('1'))
+               ->from($tableName)
+               ->setMaxResults(1);
+            $qb->executeQuery()->closeCursor();
+            return true;
+        } catch (\Exception $e) {
+            return false;
+        }
     }
 
     public function getSection() {
