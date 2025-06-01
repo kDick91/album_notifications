@@ -8,6 +8,7 @@ use OCP\AppFramework\Http\TemplateResponse;
 use OCP\IConfig;
 use OCP\IURLGenerator;
 use OCP\Http\Client\IClientService;
+use OCP\ILogger;
 
 class AlbumNotificationsSettings implements ISettings {
     private $userSession;
@@ -15,13 +16,15 @@ class AlbumNotificationsSettings implements ISettings {
     private $urlGenerator;
     private $clientService;
     private $userId;
+    private $logger;
 
-    public function __construct(IUserSession $userSession, IConfig $config, IURLGenerator $urlGenerator, IClientService $clientService) {
+    public function __construct(IUserSession $userSession, IConfig $config, IURLGenerator $urlGenerator, IClientService $clientService, ILogger $logger) {
         $this->userSession = $userSession;
         $this->config = $config;
         $this->urlGenerator = $urlGenerator;
         $this->clientService = $clientService;
         $this->userId = $userSession->getUser()->getUID();
+        $this->logger = $logger;
     }
 
     public function getForm() {
@@ -29,25 +32,38 @@ class AlbumNotificationsSettings implements ISettings {
 
         // Fetch albums from Photos app
         $client = $this->clientService->newClient();
-        $myAlbumsUrl = $this->urlGenerator->linkToRouteAbsolute('photos.albums.myAlbums');
-        $sharedAlbumsUrl = $this->urlGenerator->linkToRouteAbsolute('photos.albums.sharedAlbums');
+        $myAlbumsUrl = $this->urlGenerator->linkToRouteAbsolute('photos.api.listAlbums', ['type' => 'my']);
+        $sharedAlbumsUrl = $this->urlGenerator->linkToRouteAbsolute('photos.api.listAlbums', ['type' => 'shared']);
+
+        $options = [
+            'headers' => [
+                'Authorization' => 'Bearer ' . $this->userSession->getUser()->getUID(),
+            ],
+        ];
 
         try {
-            $myAlbumsResponse = $client->get($myAlbumsUrl);
-            $myAlbums = json_decode($myAlbumsResponse->getBody(), true) ?? [];
+            $myAlbumsResponse = $client->get($myAlbumsUrl, $options);
+            $myAlbumsBody = $myAlbumsResponse->getBody();
+            $this->logger->log(\Psr\Log\LogLevel::DEBUG, 'My Albums Response: ' . $myAlbumsBody, ['app' => 'album_notifications']);
+            $myAlbums = json_decode($myAlbumsBody, true) ?? [];
         } catch (\Exception $e) {
+            $this->logger->log(\Psr\Log\LogLevel::ERROR, 'Failed to fetch my albums: ' . $e->getMessage(), ['app' => 'album_notifications']);
             $myAlbums = [];
         }
 
         try {
-            $sharedAlbumsResponse = $client->get($sharedAlbumsUrl);
-            $sharedAlbums = json_decode($sharedAlbumsResponse->getBody(), true) ?? [];
+            $sharedAlbumsResponse = $client->get($sharedAlbumsUrl, $options);
+            $sharedAlbumsBody = $sharedAlbumsResponse->getBody();
+            $this->logger->log(\Psr\Log\LogLevel::DEBUG, 'Shared Albums Response: ' . $sharedAlbumsBody, ['app' => 'album_notifications']);
+            $sharedAlbums = json_decode($sharedAlbumsBody, true) ?? [];
         } catch (\Exception $e) {
+            $this->logger->log(\Psr\Log\LogLevel::ERROR, 'Failed to fetch shared albums: ' . $e->getMessage(), ['app' => 'album_notifications']);
             $sharedAlbums = [];
         }
 
         // Combine albums
         $albums = array_merge($myAlbums, $sharedAlbums);
+        $this->logger->log(\Psr\Log\LogLevel::DEBUG, 'Combined Albums: ' . json_encode($albums), ['app' => 'album_notifications']);
 
         // Get selected albums from config
         $selectedAlbumsJson = $this->config->getUserValue($this->userId, 'album_notifications', 'selected_albums', '[]');
