@@ -1,20 +1,40 @@
 <?php
 use OCP\Util;
-Util::addScript('album_notifications', 'settings');
 ?>
 <div class="section">
     <h2><?php p($l->t('Album Notifications')); ?></h2>
     <p><?php p($l->t('Hello %s', [$user])); ?></p>
     
+    <!-- Debug Information -->
+    <details style="margin-bottom: 20px;">
+        <summary><strong>Debug Information (click to expand)</strong></summary>
+        <div style="background: #f5f5f5; padding: 10px; margin: 10px 0; font-family: monospace; font-size: 12px;">
+            <p><strong>User ID:</strong> <?php p($debug_info['user_id']); ?></p>
+            <p><strong>Photos App Enabled:</strong> <?php p($debug_info['photos_enabled'] ? 'Yes' : 'No'); ?></p>
+            <p><strong>Memories App Enabled:</strong> <?php p($debug_info['memories_enabled'] ? 'Yes' : 'No'); ?></p>
+            
+            <h4>Existing Tables:</h4>
+            <?php if (empty($debug_info['existing_tables'])): ?>
+                <p>No relevant tables found</p>
+            <?php else: ?>
+                <?php foreach ($debug_info['existing_tables'] as $table): ?>
+                    <details style="margin: 5px 0;">
+                        <summary><strong><?php p($table); ?></strong></summary>
+                        <div style="margin-left: 20px;">
+                            <p><strong>Columns:</strong> <?php p(implode(', ', $debug_info['table_structure'][$table])); ?></p>
+                            <p><strong>Sample Data:</strong></p>
+                            <pre><?php p(json_encode($debug_info['table_sample_data'][$table], JSON_PRETTY_PRINT)); ?></pre>
+                        </div>
+                    </details>
+                <?php endforeach; ?>
+            <?php endif; ?>
+        </div>
+    </details>
+    
     <?php if (empty($albums)): ?>
         <div class="notecard warning">
             <h3><?php p($l->t('No albums found')); ?></h3>
-            <p><?php p($l->t('Make sure you have:')); ?></p>
-            <ul>
-                <li><?php p($l->t('Photos or Memories app installed and enabled')); ?></li>
-                <li><?php p($l->t('Created at least one album')); ?></li>
-                <li><?php p($l->t('Proper permissions to access albums')); ?></li>
-            </ul>
+            <p><?php p($l->t('Debug information above shows what tables exist and their content. Check your Nextcloud logs for more details.')); ?></p>
         </div>
     <?php else: ?>
         <p><?php p($l->t('Select which albums you want to receive daily notifications for:')); ?></p>
@@ -22,6 +42,7 @@ Util::addScript('album_notifications', 'settings');
             <thead>
                 <tr>
                     <th><?php p($l->t('Album Name')); ?></th>
+                    <th><?php p($l->t('Source')); ?></th>
                     <th><?php p($l->t('Daily Notification')); ?></th>
                 </tr>
             </thead>
@@ -29,6 +50,7 @@ Util::addScript('album_notifications', 'settings');
                 <?php foreach ($albums as $album): ?>
                     <tr>
                         <td><?php p($album['name'] ?? 'Unknown Album'); ?></td>
+                        <td><?php p($album['source'] ?? 'unknown'); ?></td>
                         <td>
                             <input type="checkbox" 
                                    class="album-checkbox" 
