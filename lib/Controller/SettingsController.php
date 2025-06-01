@@ -88,10 +88,9 @@ class SettingsController extends Controller {
             $message->setSubject('Album Notification Test Email');
             
             $htmlBody = $this->generateTestEmailHtml($displayName, $instanceName);
-            $textBody = $this->generateTestEmailText($displayName, $instanceName);
             
+            // Set HTML body (this automatically creates a plain text version)
             $message->setHtmlBody($htmlBody);
-            $message->setPlainTextBody($textBody);
 
             // Send the email
             $this->mailer->send($message);
@@ -153,23 +152,5 @@ class SettingsController extends Controller {
             </div>
         </body>
         </html>';
-    }
-
-    private function generateTestEmailText(string $displayName, string $instanceName): string {
-        return "Album Notifications Test
-
-Hello " . $displayName . "!
-
-This is a test email from your Album Notifications app.
-
-If you received this email, it means:
-- Your email configuration is working correctly
-- Album notifications will be delivered to this address  
-- You're all set to receive daily album updates
-
-You can now configure which albums you want to receive notifications for in your settings.
-
----
-This email was sent from your " . $instanceName . " instance.";
     }
 }
