@@ -1,62 +1,67 @@
-<?php
+use OCP\IRequest;
+use Psr\Log\LoggerInterface;
 
-namespace OCA\AlbumNotifications\Settings;
+public function __construct(
+    IUserSession $userSession,
+    IConfig $config,
+    IURLGenerator $urlGenerator,
+    IClientService $clientService,
+    IRequest $request,
+    LoggerInterface $logger
+) {
+    $this->userSession = $userSession;
+    $this->config = $config;
+    $this->urlGenerator = $urlGenerator;
+    $this->clientService = $clientService;
+    $this->request = $request;
+    $this->logger = $logger;
+    $this->userId = $userSession->getUser()->getUID();
+}
 
-use OCP\Settings\ISettings;
-use OCP\IUserSession;
-use OCP\AppFramework\Http\TemplateResponse;
-use OCP\IConfig;
-use OCA\Photos\Service\AlbumService;
+public function getForm() {
+    $displayName = $this->userSession->getUser()->getDisplayName();
 
-class AlbumNotificationsSettings implements ISettings {
-    private $userSession;
-    private $config;
-    private $albumService;
-    private $userId;
+    $client = $this->clientService->newClient();
+    $myAlbumsUrl = $this->urlGenerator->linkToRouteAbsolute('photos.albums.myAlbums');
+    $sharedAlbumsUrl = $this->urlGenerator->linkToRouteAbsolute('photos.albums.sharedAlbums');
 
-    public function __construct(IUserSession $userSession, IConfig $config, AlbumService $albumService) {
-        $this->userSession = $userSession;
-        $this->config = $config;
-        $this->albumService = $albumService;
-        $this->userId = $userSession->getUser()->getUID();
+    $sessionCookie = $this->request->getCookie('nc_session_id');
+    $options = [
+        'headers' => [
+            'Cookie' => 'nc_session_id=' . $sessionCookie,
+        ],
+    ];
+
+    try {
+        $myAlbumsResponse = $client->get($myAlbumsUrl, $options);
+        $myAlbumsBody = $myAlbumsResponse->getBody();
+        $this->logger->log(\Psr\Log\LogLevel::DEBUG, 'My Albums Response: ' . $myAlbumsBody, ['app' => 'album_notifications']);
+        $myAlbums = json_decode($myAlbumsBody, true) ?? [];
+    } catch (\Exception $e) {
+        $this->logger->log(\Psr\Log\LogLevel::ERROR, 'Failed to fetch my albums: ' . $e->getMessage(), ['app' => 'album_notifications']);
+        $myAlbums = [];
     }
 
-    public function getForm() {
-        $displayName = $this->userSession->getUser()->getDisplayName();
-
-        try {
-            $myAlbums = $this->albumService->getAlbums($this->userId);
-            $sharedAlbums = $this->albumService->getSharedAlbums($this->userId);
-        } catch (\Exception $e) {
-            $myAlbums = [];
-            $sharedAlbums = [];
-        }
-
-        $albums = array_merge(
-            array_map(function ($album) {
-                return ['id' => $album['albumId'], 'name' => $album['name']];
-            }, $myAlbums),
-            array_map(function ($album) {
-                return ['id' => $album['albumId'], 'name' => $album['name']];
-            }, $sharedAlbums)
-        );
-
-        $selectedAlbumsJson = $this->config->getUserValue($this->userId, 'album_notifications', 'selected_albums', '[]');
-        $selected_albums = json_decode($selectedAlbumsJson, true);
-
-        $parameters = [
-            'user' => $displayName,
-            'albums' => $albums,
-            'selected_albums' => $selected_albums,
-        ];
-        return new TemplateResponse('album_notifications', 'settings', $parameters);
+    try {
+        $sharedAlbumsResponse = $client->get($sharedAlbumsUrl, $options);
+        $sharedAlbumsBody = $sharedAlbumsResponse->getBody();
+        $this->logger->log(\Psr\Log\LogLevel::DEBUG, 'Shared Albums Response: ' . $sharedAlbumsBody, ['app' => 'album_notifications']);
+        $sharedAlbums = json_decode($sharedAlbumsBody, true) ?? [];
+    } catch (\Exception $e) {
+        $this->logger->log(\Psr\Log\LogLevel::ERROR, 'Failed to fetch shared albums: ' . $e->getMessage(), ['app' => 'album_notifications']);
+        $sharedAlbums = [];
     }
 
-    public function getSection() {
-        return 'album_notifications';
-    }
+    $albums = array_merge($myAlbums, $sharedAlbums);
+    $this->logger->log(\Psr\Log\LogLevel::DEBUG, 'Combined Albums: ' . json_encode($albums), ['app' => 'album_notifications']);
 
-    public function getPriority() {
-        return 10;
-    }
+    $selectedAlbumsJson = $this->config->getUserValue($this->userId, 'album_notifications', 'selected_albums', '[]');
+    $selected_albums = json_decode($selectedAlbumsJson, true);
+
+    $parameters = [
+        'user' => $displayName,
+        'albums' => $albums,
+        'selected_albums' => $selected_albums,
+    ];
+    return new TemplateResponse('album_notifications', 'settings', $parameters);
 }
