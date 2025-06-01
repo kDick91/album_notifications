@@ -5,36 +5,15 @@ use OCP\Util;
     <h2><?php p($l->t('Album Notifications')); ?></h2>
     <p><?php p($l->t('Hello %s', [$user])); ?></p>
     
-    <!-- Debug Information -->
-    <details style="margin-bottom: 20px;">
-        <summary><strong>Debug Information (click to expand)</strong></summary>
-        <div style="background: #f5f5f5; padding: 10px; margin: 10px 0; font-family: monospace; font-size: 12px;">
-            <p><strong>User ID:</strong> <?php p($debug_info['user_id']); ?></p>
-            <p><strong>Photos App Enabled:</strong> <?php p($debug_info['photos_enabled'] ? 'Yes' : 'No'); ?></p>
-            <p><strong>Memories App Enabled:</strong> <?php p($debug_info['memories_enabled'] ? 'Yes' : 'No'); ?></p>
-            
-            <h4>Existing Tables:</h4>
-            <?php if (empty($debug_info['existing_tables'])): ?>
-                <p>No relevant tables found</p>
-            <?php else: ?>
-                <?php foreach ($debug_info['existing_tables'] as $table): ?>
-                    <details style="margin: 5px 0;">
-                        <summary><strong><?php p($table); ?></strong></summary>
-                        <div style="margin-left: 20px;">
-                            <p><strong>Columns:</strong> <?php p(implode(', ', $debug_info['table_structure'][$table])); ?></p>
-                            <p><strong>Sample Data:</strong></p>
-                            <pre><?php p(json_encode($debug_info['table_sample_data'][$table], JSON_PRETTY_PRINT)); ?></pre>
-                        </div>
-                    </details>
-                <?php endforeach; ?>
-            <?php endif; ?>
-        </div>
-    </details>
-    
     <?php if (empty($albums)): ?>
         <div class="notecard warning">
             <h3><?php p($l->t('No albums found')); ?></h3>
-            <p><?php p($l->t('Debug information above shows what tables exist and their content. Check your Nextcloud logs for more details.')); ?></p>
+            <p><?php p($l->t('Make sure you have:')); ?></p>
+            <ul>
+                <li><?php p($l->t('Photos or Memories app installed and enabled')); ?></li>
+                <li><?php p($l->t('Created at least one album')); ?></li>
+                <li><?php p($l->t('Proper permissions to access albums')); ?></li>
+            </ul>
         </div>
     <?php else: ?>
         <p><?php p($l->t('Select which albums you want to receive daily notifications for:')); ?></p>
@@ -50,7 +29,7 @@ use OCP\Util;
                 <?php foreach ($albums as $album): ?>
                     <tr>
                         <td><?php p($album['name'] ?? 'Unknown Album'); ?></td>
-                        <td><?php p($album['source'] ?? 'unknown'); ?></td>
+                        <td><?php p($album['source'] ?? 'Unknown'); ?></td>
                         <td>
                             <input type="checkbox" 
                                    class="album-checkbox" 
@@ -63,6 +42,15 @@ use OCP\Util;
             </tbody>
         </table>
         
+        <div class="settings-section" style="margin-top: 30px;">
+            <h3><?php p($l->t('Test Email Notifications')); ?></h3>
+            <p><?php p($l->t('Send a test email to verify your notification setup is working correctly.')); ?></p>
+            <button id="send-test-email" class="button primary">
+                <?php p($l->t('Send Test Email')); ?>
+            </button>
+            <div id="test-email-status" style="margin-top: 10px;"></div>
+        </div>
+        
         <div class="settings-hint">
             <p><?php p($l->t('Changes are saved automatically when you check/uncheck albums.')); ?></p>
         </div>
@@ -72,6 +60,8 @@ use OCP\Util;
 <script>
 document.addEventListener('DOMContentLoaded', function() {
     const checkboxes = document.querySelectorAll('.album-checkbox');
+    const testEmailButton = document.getElementById('send-test-email');
+    const testEmailStatus = document.getElementById('test-email-status');
     
     function saveSettings() {
         const selected = Array.from(checkboxes)
@@ -100,8 +90,46 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
     
+    function sendTestEmail() {
+        testEmailButton.disabled = true;
+        testEmailButton.textContent = 'Sending...';
+        testEmailStatus.innerHTML = '';
+        
+        fetch(OC.generateUrl('/apps/album_notifications/test-email'), {
+            method: 'POST',
+            headers: {
+                'requesttoken': OC.requestToken,
+                'Content-Type': 'application/json'
+            }
+        })
+        .then(response => response.json())
+        .then(data => {
+            testEmailButton.disabled = false;
+            testEmailButton.textContent = 'Send Test Email';
+            
+            if (data.status === 'success') {
+                testEmailStatus.innerHTML = '<span style="color: green;">✅ ' + data.message + '</span>';
+                OC.Notification.showTemporary('Test email sent successfully!');
+            } else {
+                testEmailStatus.innerHTML = '<span style="color: red;">❌ ' + data.message + '</span>';
+                OC.Notification.showTemporary('Failed to send test email: ' + data.message);
+            }
+        })
+        .catch(error => {
+            testEmailButton.disabled = false;
+            testEmailButton.textContent = 'Send Test Email';
+            testEmailStatus.innerHTML = '<span style="color: red;">❌ Error sending test email</span>';
+            console.error('Error sending test email:', error);
+            OC.Notification.showTemporary('Error sending test email');
+        });
+    }
+    
     checkboxes.forEach(checkbox => {
         checkbox.addEventListener('change', saveSettings);
     });
+    
+    if (testEmailButton) {
+        testEmailButton.addEventListener('click', sendTestEmail);
+    }
 });
 </script>

@@ -40,16 +40,12 @@ class AlbumNotificationsSettings implements ISettings {
 
     public function getForm() {
         $displayName = $this->userSession->getUser()->getDisplayName();
-        
-        // Debug information
-        $debugInfo = $this->getDebugInfo();
         $albums = [];
 
-        // Try to get albums from different sources
+        // Get albums from Photos and Memories apps
         $albums = array_merge(
-            $this->getMemoriesAlbums(),
             $this->getPhotosAlbums(),
-            $this->getPhotosCollaborativeAlbums()
+            $this->getMemoriesAlbums()
         );
 
         // Remove duplicates based on album ID
@@ -70,177 +66,79 @@ class AlbumNotificationsSettings implements ISettings {
             'user' => $displayName,
             'albums' => $uniqueAlbums,
             'selected_albums' => $selected_albums,
-            'debug_info' => $debugInfo,
         ];
         return new TemplateResponse('album_notifications', 'settings', $parameters);
-    }
-
-    private function getDebugInfo(): array {
-        $debug = [];
-        
-        // Check enabled apps
-        $debug['photos_enabled'] = $this->appManager->isEnabledForUser('photos');
-        $debug['memories_enabled'] = $this->appManager->isEnabledForUser('memories');
-        $debug['user_id'] = $this->userId;
-        
-        // Check for existing tables
-        $possibleTables = [
-            'photos_albums_files',
-            'photos_albums', 
-            'oc_photos_albums',
-            'photos_album',
-            'memories_albums',
-            'oc_memories_albums',
-            'photos_albums_collabs',
-            'oc_photos_albums_collabs'
-        ];
-        
-        $debug['existing_tables'] = [];
-        foreach ($possibleTables as $table) {
-            if ($this->tableExists($table)) {
-                $debug['existing_tables'][] = $table;
-                $debug['table_structure'][$table] = $this->getTableStructure($table);
-                $debug['table_sample_data'][$table] = $this->getSampleData($table);
-            }
-        }
-        
-        $this->logger->log(LogLevel::INFO, 'Debug info: ' . json_encode($debug), ['app' => 'album_notifications']);
-        
-        return $debug;
-    }
-
-    private function getTableStructure(string $tableName): array {
-        try {
-            $result = $this->db->executeQuery("DESCRIBE `{$tableName}`");
-            $columns = [];
-            while ($row = $result->fetch()) {
-                $columns[] = $row['Field'] ?? $row['COLUMN_NAME'] ?? 'unknown';
-            }
-            $result->closeCursor();
-            return $columns;
-        } catch (\Exception $e) {
-            return ['error' => $e->getMessage()];
-        }
-    }
-
-    private function getSampleData(string $tableName): array {
-        try {
-            $qb = $this->db->getQueryBuilder();
-            $qb->select('*')
-               ->from($tableName)
-               ->setMaxResults(3);
-            
-            $result = $qb->executeQuery();
-            $data = [];
-            while ($row = $result->fetch()) {
-                $data[] = $row;
-            }
-            $result->closeCursor();
-            return $data;
-        } catch (\Exception $e) {
-            return ['error' => $e->getMessage()];
-        }
-    }
-
-    private function getMemoriesAlbums(): array {
-        $albums = [];
-
-        if (!$this->appManager->isEnabledForUser('memories')) {
-            return $albums;
-        }
-
-        $possibleTables = ['memories_albums', 'oc_memories_albums'];
-        
-        foreach ($possibleTables as $tableName) {
-            if ($this->tableExists($tableName)) {
-                try {
-                    $qb = $this->db->getQueryBuilder();
-                    $qb->select('*')
-                       ->from($tableName);
-                    
-                    $result = $qb->executeQuery();
-                    while ($row = $result->fetch()) {
-                        $albums[] = [
-                            'id' => 'memories_' . ($row['album_id'] ?? $row['id'] ?? 'unknown'),
-                            'name' => $row['name'] ?? $row['title'] ?? 'Unnamed Album',
-                            'source' => 'memories',
-                            'raw_data' => $row
-                        ];
-                    }
-                    $result->closeCursor();
-                    break;
-                } catch (\Exception $e) {
-                    $this->logger->log(LogLevel::ERROR, 'Memories error: ' . $e->getMessage(), ['app' => 'album_notifications']);
-                }
-            }
-        }
-
-        return $albums;
     }
 
     private function getPhotosAlbums(): array {
         $albums = [];
 
+        // Check if Photos app is enabled
         if (!$this->appManager->isEnabledForUser('photos')) {
             return $albums;
         }
 
-        $possibleTables = ['photos_albums', 'oc_photos_albums', 'photos_album'];
-        
-        foreach ($possibleTables as $tableName) {
-            if ($this->tableExists($tableName)) {
-                try {
-                    $qb = $this->db->getQueryBuilder();
-                    $qb->select('*')
-                       ->from($tableName);
-                    
-                    $result = $qb->executeQuery();
-                    while ($row = $result->fetch()) {
-                        $albums[] = [
-                            'id' => 'photos_' . ($row['id'] ?? $row['album_id'] ?? 'unknown'),
-                            'name' => $row['name'] ?? $row['title'] ?? 'Unnamed Album',
-                            'source' => 'photos',
-                            'raw_data' => $row
-                        ];
-                    }
-                    $result->closeCursor();
-                    break;
-                } catch (\Exception $e) {
-                    $this->logger->log(LogLevel::ERROR, 'Photos error: ' . $e->getMessage(), ['app' => 'album_notifications']);
+        try {
+            if ($this->tableExists('photos_albums')) {
+                $qb = $this->db->getQueryBuilder();
+                $qb->select('album_id', 'name', 'user')
+                   ->from('photos_albums')
+                   ->where($qb->expr()->eq('user', $qb->createNamedParameter($this->userId)));
+
+                $result = $qb->executeQuery();
+                while ($row = $result->fetch()) {
+                    $albums[] = [
+                        'id' => 'photos_' . $row['album_id'],
+                        'name' => $row['name'] ?: 'Unnamed Album',
+                        'source' => 'Photos'
+                    ];
                 }
+                $result->closeCursor();
+
+                $this->logger->log(LogLevel::DEBUG, 'Found ' . count($albums) . ' Photos albums', ['app' => 'album_notifications']);
             }
+        } catch (\Exception $e) {
+            $this->logger->log(LogLevel::ERROR, 'Failed to fetch Photos albums: ' . $e->getMessage(), ['app' => 'album_notifications']);
         }
 
         return $albums;
     }
 
-    private function getPhotosCollaborativeAlbums(): array {
+    private function getMemoriesAlbums(): array {
         $albums = [];
 
-        $possibleTables = ['photos_albums_collabs', 'oc_photos_albums_collabs'];
-        
-        foreach ($possibleTables as $tableName) {
-            if ($this->tableExists($tableName)) {
-                try {
+        // Check if Memories app is enabled
+        if (!$this->appManager->isEnabledForUser('memories')) {
+            return $albums;
+        }
+
+        try {
+            // Try common table names for Memories
+            $possibleTables = ['memories_albums', 'oc_memories_albums'];
+            
+            foreach ($possibleTables as $tableName) {
+                if ($this->tableExists($tableName)) {
                     $qb = $this->db->getQueryBuilder();
-                    $qb->select('*')
-                       ->from($tableName);
-                    
+                    $qb->select('album_id', 'name', 'user')
+                       ->from($tableName)
+                       ->where($qb->expr()->eq('user', $qb->createNamedParameter($this->userId)));
+
                     $result = $qb->executeQuery();
                     while ($row = $result->fetch()) {
                         $albums[] = [
-                            'id' => 'collab_' . ($row['id'] ?? $row['album_id'] ?? 'unknown'),
-                            'name' => $row['name'] ?? $row['title'] ?? 'Collaborative Album',
-                            'source' => 'collaborative',
-                            'raw_data' => $row
+                            'id' => 'memories_' . $row['album_id'],
+                            'name' => $row['name'] ?: 'Unnamed Album',
+                            'source' => 'Memories'
                         ];
                     }
                     $result->closeCursor();
-                    break;
-                } catch (\Exception $e) {
-                    $this->logger->log(LogLevel::ERROR, 'Collaborative albums error: ' . $e->getMessage(), ['app' => 'album_notifications']);
+
+                    $this->logger->log(LogLevel::DEBUG, 'Found ' . count($albums) . ' Memories albums from table: ' . $tableName, ['app' => 'album_notifications']);
+                    break; // Found working table, stop trying others
                 }
             }
+        } catch (\Exception $e) {
+            $this->logger->log(LogLevel::ERROR, 'Failed to fetch Memories albums: ' . $e->getMessage(), ['app' => 'album_notifications']);
         }
 
         return $albums;
