@@ -34,11 +34,17 @@ class SettingsController extends Controller {
         parent::__construct($appName, $request);
         $this->config = $config;
         $this->userSession = $userSession;
-        $this->userId = $userSession->getUser()->getUID();
         $this->mailer = $mailer;
         $this->userManager = $userManager;
         $this->urlGenerator = $urlGenerator;
         $this->logger = $logger;
+        
+        // Get user ID safely
+        $user = $userSession->getUser();
+        if ($user === null) {
+            throw new \Exception('No user logged in');
+        }
+        $this->userId = $user->getUID();
     }
 
     /**
@@ -68,19 +74,26 @@ class SettingsController extends Controller {
      * @NoAdminRequired
      */
     public function sendTestEmail(): JSONResponse {
+        $this->logger->info('sendTestEmail method called', ['app' => 'album_notifications']);
+        
         try {
             $user = $this->userManager->get($this->userId);
             if (!$user) {
+                $this->logger->error('User not found: ' . $this->userId, ['app' => 'album_notifications']);
                 return new JSONResponse(['status' => 'error', 'message' => 'User not found'], 404);
             }
 
             $email = $user->getEMailAddress();
+            $this->logger->info('User email address: ' . ($email ?: 'NONE'), ['app' => 'album_notifications']);
+            
             if (!$email) {
                 return new JSONResponse(['status' => 'error', 'message' => 'No email address found in your profile. Please add an email address in your personal settings.'], 400);
             }
 
             $displayName = $user->getDisplayName();
             $instanceName = $this->config->getSystemValue('instanceid', 'Nextcloud');
+
+            $this->logger->info('Creating email message for: ' . $email, ['app' => 'album_notifications']);
 
             // Create the email
             $message = $this->mailer->createMessage();
@@ -91,6 +104,8 @@ class SettingsController extends Controller {
             
             // Set HTML body (this automatically creates a plain text version)
             $message->setHtmlBody($htmlBody);
+
+            $this->logger->info('Attempting to send email...', ['app' => 'album_notifications']);
 
             // Send the email
             $this->mailer->send($message);
@@ -104,6 +119,7 @@ class SettingsController extends Controller {
 
         } catch (\Exception $e) {
             $this->logger->error('Failed to send test email: ' . $e->getMessage(), ['app' => 'album_notifications']);
+            $this->logger->error('Stack trace: ' . $e->getTraceAsString(), ['app' => 'album_notifications']);
             return new JSONResponse([
                 'status' => 'error', 
                 'message' => 'Failed to send test email: ' . $e->getMessage()

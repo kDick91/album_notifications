@@ -63,10 +63,15 @@ document.addEventListener('DOMContentLoaded', function() {
     const testEmailButton = document.getElementById('send-test-email');
     const testEmailStatus = document.getElementById('test-email-status');
     
+    console.log('Album Notifications settings loaded');
+    console.log('Test email button:', testEmailButton);
+    
     function saveSettings() {
         const selected = Array.from(checkboxes)
             .filter(cb => cb.checked)
             .map(cb => cb.value);
+        
+        console.log('Saving settings for albums:', selected);
         
         // Save to Nextcloud user config
         const data = new FormData();
@@ -79,6 +84,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 'requesttoken': OC.requestToken
             }
         }).then(response => {
+            console.log('Settings save response:', response);
             if (response.ok) {
                 OC.Notification.showTemporary('Settings saved successfully');
             } else {
@@ -91,19 +97,30 @@ document.addEventListener('DOMContentLoaded', function() {
     }
     
     function sendTestEmail() {
+        console.log('sendTestEmail function called');
+        
         testEmailButton.disabled = true;
         testEmailButton.textContent = 'Sending...';
         testEmailStatus.innerHTML = '';
         
-        fetch(OC.generateUrl('/apps/album_notifications/test-email'), {
+        const url = OC.generateUrl('/apps/album_notifications/test-email');
+        console.log('Sending test email to URL:', url);
+        
+        fetch(url, {
             method: 'POST',
             headers: {
                 'requesttoken': OC.requestToken,
                 'Content-Type': 'application/json'
             }
         })
-        .then(response => response.json())
+        .then(response => {
+            console.log('Test email response status:', response.status);
+            console.log('Test email response headers:', response.headers);
+            return response.json();
+        })
         .then(data => {
+            console.log('Test email response data:', data);
+            
             testEmailButton.disabled = false;
             testEmailButton.textContent = 'Send Test Email';
             
@@ -116,10 +133,10 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         })
         .catch(error => {
+            console.error('Error sending test email:', error);
             testEmailButton.disabled = false;
             testEmailButton.textContent = 'Send Test Email';
             testEmailStatus.innerHTML = '<span style="color: red;">❌ Error sending test email</span>';
-            console.error('Error sending test email:', error);
             OC.Notification.showTemporary('Error sending test email');
         });
     }
@@ -129,7 +146,14 @@ document.addEventListener('DOMContentLoaded', function() {
     });
     
     if (testEmailButton) {
-        testEmailButton.addEventListener('click', sendTestEmail);
+        console.log('Adding click listener to test email button');
+        testEmailButton.addEventListener('click', function(e) {
+            console.log('Test email button clicked');
+            e.preventDefault();
+            sendTestEmail();
+        });
+    } else {
+        console.error('Test email button not found!');
     }
 });
 </script>
