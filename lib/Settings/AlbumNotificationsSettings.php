@@ -7,7 +7,7 @@ use OCP\IUserSession;
 use OCP\AppFramework\Http\TemplateResponse;
 use OCP\IConfig;
 use OCP\IURLGenerator;
-use OCP\Http\Client\IClientService;
+use OCP\DB\IDBConnection; // Added for database access
 use OCP\IRequest;
 use Psr\Log\LoggerInterface;
 use Psr\Log\LogLevel;
@@ -16,7 +16,7 @@ class AlbumNotificationsSettings implements ISettings {
     private $userSession;
     private $config;
     private $urlGenerator;
-    private $clientService;
+    private $connection; // Changed from IClientService to IDBConnection
     private $request;
     private $logger;
     private $userId;
@@ -25,14 +25,14 @@ class AlbumNotificationsSettings implements ISettings {
         IUserSession $userSession,
         IConfig $config,
         IURLGenerator $urlGenerator,
-        IClientService $clientService,
+        IDBConnection $connection, // Replaced IClientService with IDBConnection
         IRequest $request,
         LoggerInterface $logger
     ) {
         $this->userSession = $userSession;
         $this->config = $config;
         $this->urlGenerator = $urlGenerator;
-        $this->clientService = $clientService;
+        $this->connection = $connection; // Updated assignment
         $this->request = $request;
         $this->logger = $logger;
         $this->userId = $userSession->getUser()->getUID();
@@ -41,48 +41,25 @@ class AlbumNotificationsSettings implements ISettings {
     public function getForm() {
         $displayName = $this->userSession->getUser()->getDisplayName();
 
-        // Fetch albums from Photos app API
-        $client = $this->clientService->newClient();
-        $myAlbumsUrl = $this->urlGenerator->linkToRouteAbsolute('photos.api.listAlbums', ['type' => 'my']);
-        $sharedAlbumsUrl = $this->urlGenerator->linkToRouteAbsolute('photos.api.listAlbums', ['type' => 'shared']);
-
-        $sessionCookie = $this->request->getCookie('nc_session_id') ?? '';
-        $options = [
-            'headers' => [
-                'Cookie' => 'nc_session_id=' . $sessionCookie,
-                'X-Requested-With' => 'XMLHttpRequest'
-            ],
-        ];
-
-        try {
-            $myAlbumsResponse = $client->get($myAlbumsUrl, $options);
-            $myAlbumsBody = $myAlbumsResponse->getBody();
-            $this->logger->log(LogLevel::DEBUG, 'My Albums Response: ' . $myAlbumsBody, ['app' => 'album_notifications']);
-            $myAlbums = json_decode($myAlbumsBody, true) ?? [];
-        } catch (\Exception $e) {
-            $this->logger->log(LogLevel::ERROR, 'Failed to fetch my albums: ' . $e->getMessage(), ['app' => 'album_notifications']);
-            $myAlbums = [];
-        }
+        // Fetch albums from the database
+        $qb = $this->connection->getQueryBuilder();
+        $qb->select('a.id', 'a.name')
+           ->from('photos_albums', 'a')
+           ->where($qb->expr()->eq('a.user', $qb->createNamedParameter($this->userId)))
+           ->orWhere($qb->expr()->exists(function ($subQb) {
+               $subQb->select('1')
+                      ->from('photos_albums_collab', 'c')
+                      ->where($subQb->expr()->eq('c.album_id', 'a.id'))
+                      ->andWhere($subQb->expr()->eq('c.user_id', $subQb->createNamedParameter($this->userId)));
+           }));
 
         try {
-            $sharedAlbumsResponse = $client->get($sharedAlbumsUrl, $options);
-            $sharedAlbumsBody = $sharedAlbumsResponse->getBody();
-            $this->logger->log(LogLevel::DEBUG, 'Shared Albums Response: ' . $sharedAlbumsBody, ['app' => 'album_notifications']);
-            $sharedAlbums = json_decode($sharedAlbumsBody, true) ?? [];
+            $result = $qb->executeQuery();
+            $albums = $result->fetchAll(\PDO::FETCH_ASSOC);
         } catch (\Exception $e) {
-            $this->logger->log(LogLevel::ERROR, 'Failed to fetch shared albums: ' . $e->getMessage(), ['app' => 'album_notifications']);
-            $sharedAlbums = [];
+            $this->logger->log(LogLevel::ERROR, 'Failed to fetch albums from database: ' . $e->getMessage(), ['app' => 'album_notifications']);
+            $albums = [];
         }
-
-        // Normalize album data
-        $albums = array_merge(
-            array_map(function ($album) {
-                return ['id' => $album['albumId'] ?? $album['id'] ?? '', 'name' => $album['name'] ?? $album['title'] ?? 'Unknown Album'];
-            }, $myAlbums),
-            array_map(function ($album) {
-                return ['id' => $album['albumId'] ?? $album['id'] ?? '', 'name' => $album['name'] ?? $album['title'] ?? 'Unknown Album'];
-            }, $sharedAlbums)
-        );
 
         // Get selected albums from config
         $selectedAlbumsJson = $this->config->getUserValue($this->userId, 'album_notifications', 'selected_albums', '[]');
