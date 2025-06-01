@@ -1,3 +1,5 @@
+<?php
+
 use OCP\IRequest;
 use Psr\Log\LoggerInterface;
 
