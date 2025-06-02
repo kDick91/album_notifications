@@ -6,7 +6,6 @@ use OCP\AppFramework\App;
 use OCP\AppFramework\Bootstrap\IBootContext;
 use OCP\AppFramework\Bootstrap\IBootstrap;
 use OCP\AppFramework\Bootstrap\IRegistrationContext;
-use OCA\AlbumNotifications\BackgroundJob\DailyNotificationJob;
 
 class Application extends App implements IBootstrap {
     public const APP_ID = 'album_notifications';
@@ -16,8 +15,8 @@ class Application extends App implements IBootstrap {
     }
 
     public function register(IRegistrationContext $context): void {
-        // Register background job
-        $context->registerBackgroundJob(DailyNotificationJob::class);
+        // Background jobs are now registered via info.xml only
+        // No need to register them here in Nextcloud 31+
     }
 
     public function boot(IBootContext $context): void {
