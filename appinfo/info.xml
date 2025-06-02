@@ -5,7 +5,7 @@
   <description>A simple app for album notifications</description>
   <version>0.1.0</version>
   <licence>AGPL-3.0-or-later</licence>
-  <author>Your Name</author>
+  <author>Kyle Dickson</author>
   <namespace>AlbumNotifications</namespace>
   <category>tools</category>
   <dependencies>
