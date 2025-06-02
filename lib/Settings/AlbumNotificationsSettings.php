@@ -80,6 +80,7 @@ class AlbumNotificationsSettings implements ISettings {
 
         try {
             if ($this->tableExists('photos_albums')) {
+                // Get albums created by the user
                 $qb = $this->db->getQueryBuilder();
                 $qb->select('album_id', 'name', 'user')
                    ->from('photos_albums')
@@ -90,12 +91,73 @@ class AlbumNotificationsSettings implements ISettings {
                     $albums[] = [
                         'id' => 'photos_' . $row['album_id'],
                         'name' => $row['name'] ?: 'Unnamed Album',
-                        'source' => 'Photos'
+                        'source' => 'Photos',
+                        'owner' => $row['user'],
+                        'shared' => false
                     ];
                 }
                 $result->closeCursor();
 
-                $this->logger->log(LogLevel::DEBUG, 'Found ' . count($albums) . ' Photos albums', ['app' => 'album_notifications']);
+                // Get albums shared with the user (collaborative albums)
+                if ($this->tableExists('photos_albums_collabs')) {
+                    $qb = $this->db->getQueryBuilder();
+                    $qb->select('pa.album_id', 'pa.name', 'pa.user', 'pac.collaborator_id', 'pac.collaborator_type')
+                       ->from('photos_albums', 'pa')
+                       ->innerJoin('pa', 'photos_albums_collabs', 'pac', 'pa.album_id = pac.album_id')
+                       ->where($qb->expr()->eq('pac.collaborator_id', $qb->createNamedParameter($this->userId)))
+                       ->andWhere($qb->expr()->eq('pac.collaborator_type', $qb->createNamedParameter(0))) // 0 = user
+                       ->andWhere($qb->expr()->neq('pa.user', $qb->createNamedParameter($this->userId))); // Exclude own albums
+
+                    $result = $qb->executeQuery();
+                    while ($row = $result->fetch()) {
+                        $albums[] = [
+                            'id' => 'photos_' . $row['album_id'],
+                            'name' => ($row['name'] ?: 'Unnamed Album') . ' (shared by ' . $row['user'] . ')',
+                            'source' => 'Photos',
+                            'owner' => $row['user'],
+                            'shared' => true
+                        ];
+                    }
+                    $result->closeCursor();
+                }
+
+                // Also check for group-based sharing if photos_albums_collabs supports it
+                if ($this->tableExists('photos_albums_collabs') && $this->tableExists('group_user')) {
+                    $qb = $this->db->getQueryBuilder();
+                    $qb->select('pa.album_id', 'pa.name', 'pa.user', 'pac.collaborator_id')
+                       ->from('photos_albums', 'pa')
+                       ->innerJoin('pa', 'photos_albums_collabs', 'pac', 'pa.album_id = pac.album_id')
+                       ->innerJoin('pac', 'group_user', 'gu', 'pac.collaborator_id = gu.gid')
+                       ->where($qb->expr()->eq('gu.uid', $qb->createNamedParameter($this->userId)))
+                       ->andWhere($qb->expr()->eq('pac.collaborator_type', $qb->createNamedParameter(1))) // 1 = group
+                       ->andWhere($qb->expr()->neq('pa.user', $qb->createNamedParameter($this->userId))); // Exclude own albums
+
+                    $result = $qb->executeQuery();
+                    while ($row = $result->fetch()) {
+                        $albumId = 'photos_' . $row['album_id'];
+                        // Check if we already added this album (avoid duplicates)
+                        $exists = false;
+                        foreach ($albums as $existingAlbum) {
+                            if ($existingAlbum['id'] === $albumId) {
+                                $exists = true;
+                                break;
+                            }
+                        }
+                        
+                        if (!$exists) {
+                            $albums[] = [
+                                'id' => $albumId,
+                                'name' => ($row['name'] ?: 'Unnamed Album') . ' (shared via group)',
+                                'source' => 'Photos',
+                                'owner' => $row['user'],
+                                'shared' => true
+                            ];
+                        }
+                    }
+                    $result->closeCursor();
+                }
+
+                $this->logger->log(LogLevel::DEBUG, 'Found ' . count($albums) . ' Photos albums (including shared)', ['app' => 'album_notifications']);
             }
         } catch (\Exception $e) {
             $this->logger->log(LogLevel::ERROR, 'Failed to fetch Photos albums: ' . $e->getMessage(), ['app' => 'album_notifications']);
@@ -118,6 +180,7 @@ class AlbumNotificationsSettings implements ISettings {
             
             foreach ($possibleTables as $tableName) {
                 if ($this->tableExists($tableName)) {
+                    // Get albums created by the user
                     $qb = $this->db->getQueryBuilder();
                     $qb->select('album_id', 'name', 'user')
                        ->from($tableName)
@@ -128,12 +191,74 @@ class AlbumNotificationsSettings implements ISettings {
                         $albums[] = [
                             'id' => 'memories_' . $row['album_id'],
                             'name' => $row['name'] ?: 'Unnamed Album',
-                            'source' => 'Memories'
+                            'source' => 'Memories',
+                            'owner' => $row['user'],
+                            'shared' => false
                         ];
                     }
                     $result->closeCursor();
 
-                    $this->logger->log(LogLevel::DEBUG, 'Found ' . count($albums) . ' Memories albums from table: ' . $tableName, ['app' => 'album_notifications']);
+                    // Get albums shared with the user (collaborative albums)
+                    $collabTableName = str_replace('_albums', '_albums_collabs', $tableName);
+                    if ($this->tableExists($collabTableName)) {
+                        $qb = $this->db->getQueryBuilder();
+                        $qb->select('ma.album_id', 'ma.name', 'ma.user', 'mac.collaborator_id', 'mac.collaborator_type')
+                           ->from($tableName, 'ma')
+                           ->innerJoin('ma', $collabTableName, 'mac', 'ma.album_id = mac.album_id')
+                           ->where($qb->expr()->eq('mac.collaborator_id', $qb->createNamedParameter($this->userId)))
+                           ->andWhere($qb->expr()->eq('mac.collaborator_type', $qb->createNamedParameter(0))) // 0 = user
+                           ->andWhere($qb->expr()->neq('ma.user', $qb->createNamedParameter($this->userId))); // Exclude own albums
+
+                        $result = $qb->executeQuery();
+                        while ($row = $result->fetch()) {
+                            $albums[] = [
+                                'id' => 'memories_' . $row['album_id'],
+                                'name' => ($row['name'] ?: 'Unnamed Album') . ' (shared by ' . $row['user'] . ')',
+                                'source' => 'Memories',
+                                'owner' => $row['user'],
+                                'shared' => true
+                            ];
+                        }
+                        $result->closeCursor();
+
+                        // Also check for group-based sharing
+                        if ($this->tableExists('group_user')) {
+                            $qb = $this->db->getQueryBuilder();
+                            $qb->select('ma.album_id', 'ma.name', 'ma.user', 'mac.collaborator_id')
+                               ->from($tableName, 'ma')
+                               ->innerJoin('ma', $collabTableName, 'mac', 'ma.album_id = mac.album_id')
+                               ->innerJoin('mac', 'group_user', 'gu', 'mac.collaborator_id = gu.gid')
+                               ->where($qb->expr()->eq('gu.uid', $qb->createNamedParameter($this->userId)))
+                               ->andWhere($qb->expr()->eq('mac.collaborator_type', $qb->createNamedParameter(1))) // 1 = group
+                               ->andWhere($qb->expr()->neq('ma.user', $qb->createNamedParameter($this->userId))); // Exclude own albums
+
+                            $result = $qb->executeQuery();
+                            while ($row = $result->fetch()) {
+                                $albumId = 'memories_' . $row['album_id'];
+                                // Check if we already added this album (avoid duplicates)
+                                $exists = false;
+                                foreach ($albums as $existingAlbum) {
+                                    if ($existingAlbum['id'] === $albumId) {
+                                        $exists = true;
+                                        break;
+                                    }
+                                }
+                                
+                                if (!$exists) {
+                                    $albums[] = [
+                                        'id' => $albumId,
+                                        'name' => ($row['name'] ?: 'Unnamed Album') . ' (shared via group)',
+                                        'source' => 'Memories',
+                                        'owner' => $row['user'],
+                                        'shared' => true
+                                    ];
+                                }
+                            }
+                            $result->closeCursor();
+                        }
+                    }
+
+                    $this->logger->log(LogLevel::DEBUG, 'Found ' . count($albums) . ' Memories albums from table: ' . $tableName . ' (including shared)', ['app' => 'album_notifications']);
                     break; // Found working table, stop trying others
                 }
             }

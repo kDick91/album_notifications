@@ -150,18 +150,11 @@ class DailyNotificationJob extends TimedJob {
         $realAlbumId = str_replace('photos_', '', $albumId);
 
         try {
-            // First get album info
-            $qb = $this->db->getQueryBuilder();
-            $qb->select('name', 'last_added_photo')
-               ->from('photos_albums')
-               ->where($qb->expr()->eq('album_id', $qb->createNamedParameter($realAlbumId)))
-               ->andWhere($qb->expr()->eq('user', $qb->createNamedParameter($userId)));
-
-            $result = $qb->executeQuery();
-            $albumData = $result->fetch();
-            $result->closeCursor();
-
+            // Check if user has access to this album (owned OR shared)
+            $albumData = $this->getPhotosAlbumInfo($realAlbumId, $userId);
+            
             if (!$albumData) {
+                $this->logger->debug('User ' . $userId . ' does not have access to Photos album ' . $realAlbumId, ['app' => 'album_notifications']);
                 return null;
             }
 
@@ -174,7 +167,9 @@ class DailyNotificationJob extends TimedJob {
                 return [
                     'name' => $albumData['name'] ?: 'Unnamed Album',
                     'source' => 'Photos',
-                    'photo_count' => $photoCount
+                    'photo_count' => $photoCount,
+                    'owner' => $albumData['owner'],
+                    'shared' => $albumData['shared']
                 ];
             }
         } catch (\Exception $e) {
@@ -192,40 +187,196 @@ class DailyNotificationJob extends TimedJob {
         $realAlbumId = str_replace('memories_', '', $albumId);
 
         try {
-            // Try common table names for Memories
-            $possibleTables = ['memories_albums', 'oc_memories_albums'];
+            // Check if user has access to this album (owned OR shared)
+            $albumData = $this->getMemoriesAlbumInfo($realAlbumId, $userId);
             
-            foreach ($possibleTables as $tableName) {
-                if ($this->tableExists($tableName)) {
+            if (!$albumData) {
+                $this->logger->debug('User ' . $userId . ' does not have access to Memories album ' . $realAlbumId, ['app' => 'album_notifications']);
+                return null;
+            }
+
+            // Check if last_added_photo is within the last 24 hours
+            $lastAddedPhoto = $albumData['last_added_photo'];
+            if ($lastAddedPhoto && $lastAddedPhoto >= $yesterdayTimestamp) {
+                // Count new photos added
+                $photoCount = $this->countNewPhotosInAlbum('memories', $realAlbumId, $yesterdayTimestamp, $userId);
+                
+                return [
+                    'name' => $albumData['name'] ?: 'Unnamed Album',
+                    'source' => 'Memories',
+                    'photo_count' => $photoCount,
+                    'owner' => $albumData['owner'],
+                    'shared' => $albumData['shared']
+                ];
+            }
+        } catch (\Exception $e) {
+            $this->logger->error('Error checking Memories album ' . $albumId . ': ' . $e->getMessage(), ['app' => 'album_notifications']);
+        }
+
+        return null;
+    }
+
+    /**
+     * Get Photos album info if user has access (owns OR is shared with)
+     */
+    private function getPhotosAlbumInfo(string $albumId, string $userId): ?array {
+        // First check if user owns the album
+        $qb = $this->db->getQueryBuilder();
+        $qb->select('name', 'last_added_photo', 'user')
+           ->from('photos_albums')
+           ->where($qb->expr()->eq('album_id', $qb->createNamedParameter($albumId)))
+           ->andWhere($qb->expr()->eq('user', $qb->createNamedParameter($userId)));
+
+        $result = $qb->executeQuery();
+        $albumData = $result->fetch();
+        $result->closeCursor();
+
+        if ($albumData) {
+            return [
+                'name' => $albumData['name'],
+                'last_added_photo' => $albumData['last_added_photo'],
+                'owner' => $albumData['user'],
+                'shared' => false
+            ];
+        }
+
+        // If not owned, check if shared with user
+        if ($this->tableExists('photos_albums_collabs')) {
+            // Check direct user sharing
+            $qb = $this->db->getQueryBuilder();
+            $qb->select('pa.name', 'pa.last_added_photo', 'pa.user')
+               ->from('photos_albums', 'pa')
+               ->innerJoin('pa', 'photos_albums_collabs', 'pac', 'pa.album_id = pac.album_id')
+               ->where($qb->expr()->eq('pa.album_id', $qb->createNamedParameter($albumId)))
+               ->andWhere($qb->expr()->eq('pac.collaborator_id', $qb->createNamedParameter($userId)))
+               ->andWhere($qb->expr()->eq('pac.collaborator_type', $qb->createNamedParameter(0))); // 0 = user
+
+            $result = $qb->executeQuery();
+            $albumData = $result->fetch();
+            $result->closeCursor();
+
+            if ($albumData) {
+                return [
+                    'name' => $albumData['name'],
+                    'last_added_photo' => $albumData['last_added_photo'],
+                    'owner' => $albumData['user'],
+                    'shared' => true
+                ];
+            }
+
+            // Check group-based sharing
+            if ($this->tableExists('group_user')) {
+                $qb = $this->db->getQueryBuilder();
+                $qb->select('pa.name', 'pa.last_added_photo', 'pa.user')
+                   ->from('photos_albums', 'pa')
+                   ->innerJoin('pa', 'photos_albums_collabs', 'pac', 'pa.album_id = pac.album_id')
+                   ->innerJoin('pac', 'group_user', 'gu', 'pac.collaborator_id = gu.gid')
+                   ->where($qb->expr()->eq('pa.album_id', $qb->createNamedParameter($albumId)))
+                   ->andWhere($qb->expr()->eq('gu.uid', $qb->createNamedParameter($userId)))
+                   ->andWhere($qb->expr()->eq('pac.collaborator_type', $qb->createNamedParameter(1))); // 1 = group
+
+                $result = $qb->executeQuery();
+                $albumData = $result->fetch();
+                $result->closeCursor();
+
+                if ($albumData) {
+                    return [
+                        'name' => $albumData['name'],
+                        'last_added_photo' => $albumData['last_added_photo'],
+                        'owner' => $albumData['user'],
+                        'shared' => true
+                    ];
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Get Memories album info if user has access (owns OR is shared with)
+     */
+    private function getMemoriesAlbumInfo(string $albumId, string $userId): ?array {
+        // Try common table names for Memories
+        $possibleTables = ['memories_albums', 'oc_memories_albums'];
+        
+        foreach ($possibleTables as $tableName) {
+            if (!$this->tableExists($tableName)) {
+                continue;
+            }
+
+            // First check if user owns the album
+            $qb = $this->db->getQueryBuilder();
+            $qb->select('name', 'last_added_photo', 'user')
+               ->from($tableName)
+               ->where($qb->expr()->eq('album_id', $qb->createNamedParameter($albumId)))
+               ->andWhere($qb->expr()->eq('user', $qb->createNamedParameter($userId)));
+
+            $result = $qb->executeQuery();
+            $albumData = $result->fetch();
+            $result->closeCursor();
+
+            if ($albumData) {
+                return [
+                    'name' => $albumData['name'],
+                    'last_added_photo' => $albumData['last_added_photo'],
+                    'owner' => $albumData['user'],
+                    'shared' => false
+                ];
+            }
+
+            // If not owned, check if shared with user
+            $collabTableName = str_replace('_albums', '_albums_collabs', $tableName);
+            if ($this->tableExists($collabTableName)) {
+                // Check direct user sharing
+                $qb = $this->db->getQueryBuilder();
+                $qb->select('ma.name', 'ma.last_added_photo', 'ma.user')
+                   ->from($tableName, 'ma')
+                   ->innerJoin('ma', $collabTableName, 'mac', 'ma.album_id = mac.album_id')
+                   ->where($qb->expr()->eq('ma.album_id', $qb->createNamedParameter($albumId)))
+                   ->andWhere($qb->expr()->eq('mac.collaborator_id', $qb->createNamedParameter($userId)))
+                   ->andWhere($qb->expr()->eq('mac.collaborator_type', $qb->createNamedParameter(0))); // 0 = user
+
+                $result = $qb->executeQuery();
+                $albumData = $result->fetch();
+                $result->closeCursor();
+
+                if ($albumData) {
+                    return [
+                        'name' => $albumData['name'],
+                        'last_added_photo' => $albumData['last_added_photo'],
+                        'owner' => $albumData['user'],
+                        'shared' => true
+                    ];
+                }
+
+                // Check group-based sharing
+                if ($this->tableExists('group_user')) {
                     $qb = $this->db->getQueryBuilder();
-                    $qb->select('name', 'last_added_photo')
-                       ->from($tableName)
-                       ->where($qb->expr()->eq('album_id', $qb->createNamedParameter($realAlbumId)))
-                       ->andWhere($qb->expr()->eq('user', $qb->createNamedParameter($userId)));
+                    $qb->select('ma.name', 'ma.last_added_photo', 'ma.user')
+                       ->from($tableName, 'ma')
+                       ->innerJoin('ma', $collabTableName, 'mac', 'ma.album_id = mac.album_id')
+                       ->innerJoin('mac', 'group_user', 'gu', 'mac.collaborator_id = gu.gid')
+                       ->where($qb->expr()->eq('ma.album_id', $qb->createNamedParameter($albumId)))
+                       ->andWhere($qb->expr()->eq('gu.uid', $qb->createNamedParameter($userId)))
+                       ->andWhere($qb->expr()->eq('mac.collaborator_type', $qb->createNamedParameter(1))); // 1 = group
 
                     $result = $qb->executeQuery();
                     $albumData = $result->fetch();
                     $result->closeCursor();
 
                     if ($albumData) {
-                        // Check if last_added_photo is within the last 24 hours
-                        $lastAddedPhoto = $albumData['last_added_photo'];
-                        if ($lastAddedPhoto && $lastAddedPhoto >= $yesterdayTimestamp) {
-                            // Count new photos added
-                            $photoCount = $this->countNewPhotosInAlbum('memories', $realAlbumId, $yesterdayTimestamp, $userId);
-                            
-                            return [
-                                'name' => $albumData['name'] ?: 'Unnamed Album',
-                                'source' => 'Memories',
-                                'photo_count' => $photoCount
-                            ];
-                        }
-                        break;
+                        return [
+                            'name' => $albumData['name'],
+                            'last_added_photo' => $albumData['last_added_photo'],
+                            'owner' => $albumData['user'],
+                            'shared' => true
+                        ];
                     }
                 }
             }
-        } catch (\Exception $e) {
-            $this->logger->error('Error checking Memories album ' . $albumId . ': ' . $e->getMessage(), ['app' => 'album_notifications']);
+
+            break; // Found working table, stop trying others
         }
 
         return null;
@@ -306,9 +457,15 @@ class DailyNotificationJob extends TimedJob {
             $totalPhotos += $photoCount;
             $photoText = $photoCount === 1 ? '1 new photo' : $photoCount . ' new photos';
             
+            // Add sharing info to album name display
+            $albumDisplayName = htmlspecialchars($album['name']);
+            if ($album['shared']) {
+                $albumDisplayName .= ' <span style="color: #666; font-size: 12px;">(shared by ' . htmlspecialchars($album['owner']) . ')</span>';
+            }
+            
             $albumsHtml .= '
                 <div style="background: #f0f0f0; padding: 15px; margin: 10px 0; border-radius: 5px; border-left: 4px solid #0082c9;">
-                    <h3 style="margin: 0 0 5px 0; color: #333;">' . htmlspecialchars($album['name']) . '</h3>
+                    <h3 style="margin: 0 0 5px 0; color: #333;">' . $albumDisplayName . '</h3>
                     <p style="margin: 0; color: #666; font-size: 14px;">
                         <strong>' . $photoText . '</strong> added from ' . htmlspecialchars($album['source']) . '
                     </p>
