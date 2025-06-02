@@ -15,4 +15,7 @@
     <personal>OCA\AlbumNotifications\Settings\AlbumNotificationsSettings</personal>
     <personal-section>OCA\AlbumNotifications\Settings\AlbumNotificationsSection</personal-section>
   </settings>
+  <background-jobs>
+    <job>OCA\AlbumNotifications\BackgroundJob\DailyNotificationJob</job>
+  </background-jobs>
 </info>

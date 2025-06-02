@@ -46,6 +46,15 @@ Util::addScript('album_notifications', 'settings');
         </table>
         
         <div class="settings-section" style="margin-top: 30px;">
+            <h3><?php p($l->t('Daily Notifications')); ?></h3>
+            <div class="notecard info">
+                <p><?php p($l->t('📅 Daily notifications are sent at 7:30 PM CST if new photos have been added to your selected albums in the past 24 hours.')); ?></p>
+                <p><?php p($l->t('📧 If multiple albums have updates, you\'ll receive one consolidated email listing all updated albums.')); ?></p>
+                <p><?php p($l->t('🔕 If no photos are added to any of your selected albums, no email will be sent.')); ?></p>
+            </div>
+        </div>
+        
+        <div class="settings-section" style="margin-top: 30px;">
             <h3><?php p($l->t('Test Email Notifications')); ?></h3>
             <p><?php p($l->t('Send a test email to verify your notification setup is working correctly.')); ?></p>
             <button id="send-test-email" class="button primary">
