@@ -41,26 +41,15 @@ class DailyNotificationJob extends TimedJob {
         $this->appManager = $appManager;
         $this->logger = $logger;
 
-        // Set to run daily at 7:30 PM CST (00:30 UTC next day, accounting for CST = UTC-6)
-        // Note: You may need to adjust this based on your server's timezone
+        // Set to run daily (24 hours)
         $this->setInterval(24 * 60 * 60); // 24 hours
     }
 
     protected function run($argument) {
         $this->logger->info('Starting daily album notification job', ['app' => 'album_notifications']);
 
-        // Get current time in CST
-        $now = new \DateTime('now', new \DateTimeZone('America/Chicago'));
-        $currentHour = (int)$now->format('H');
-        $currentMinute = (int)$now->format('i');
-
-        // Only run between 7:30 PM and 7:35 PM CST to ensure it runs once per day
-        if ($currentHour !== 19 || $currentMinute < 30 || $currentMinute > 35) {
-            $this->logger->debug('Skipping notification job - not the right time. Current time: ' . $now->format('H:i'), ['app' => 'album_notifications']);
-            return;
-        }
-
         // Get 24 hours ago timestamp
+        $now = new \DateTime('now');
         $yesterday = clone $now;
         $yesterday->sub(new \DateInterval('P1D'));
         $yesterdayTimestamp = $yesterday->getTimestamp();
