@@ -61,7 +61,8 @@ class DailyNotificationJob extends TimedJob {
         }
 
         // Get 24 hours ago timestamp
-        $yesterday = $now->sub(new \DateInterval('P1D'));
+        $yesterday = clone $now;
+        $yesterday->sub(new \DateInterval('P1D'));
         $yesterdayTimestamp = $yesterday->getTimestamp();
 
         $this->logger->info('Checking for photos added since: ' . $yesterday->format('Y-m-d H:i:s'), ['app' => 'album_notifications']);
