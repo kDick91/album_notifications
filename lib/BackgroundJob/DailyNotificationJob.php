@@ -140,80 +140,94 @@ class DailyNotificationJob extends TimedJob {
     }
 
     private function checkPhotosAlbumForUpdates(string $albumId, int $yesterdayTimestamp, string $userId): ?array {
-        if (!$this->appManager->isEnabledForUser('photos', $userId)) {
-            $this->logger->debug('Photos app not enabled for user ' . $userId, ['app' => 'album_notifications']);
+    // Get the user object first
+    $user = $this->userManager->get($userId);
+    if (!$user) {
+        $this->logger->debug('User ' . $userId . ' not found', ['app' => 'album_notifications']);
+        return null;
+    }
+
+    if (!$this->appManager->isEnabledForUser('photos', $user)) {
+        $this->logger->debug('Photos app not enabled for user ' . $userId, ['app' => 'album_notifications']);
+        return null;
+    }
+
+    $realAlbumId = str_replace('photos_', '', $albumId);
+
+    try {
+        // Get album info first
+        $albumData = $this->getPhotosAlbumInfo($realAlbumId, $userId);
+        
+        if (!$albumData) {
+            $this->logger->debug('User ' . $userId . ' does not have access to Photos album ' . $realAlbumId, ['app' => 'album_notifications']);
             return null;
         }
 
-        $realAlbumId = str_replace('photos_', '', $albumId);
-
-        try {
-            // Get album info first
-            $albumData = $this->getPhotosAlbumInfo($realAlbumId, $userId);
+        // Check for new photos using file addition timestamps instead of last_added_photo
+        $photoCount = $this->countNewPhotosInPhotosAlbum($realAlbumId, $yesterdayTimestamp, $userId);
+        
+        if ($photoCount > 0) {
+            $this->logger->debug('Found ' . $photoCount . ' new photos in Photos album ' . $realAlbumId . ' for user ' . $userId, ['app' => 'album_notifications']);
             
-            if (!$albumData) {
-                $this->logger->debug('User ' . $userId . ' does not have access to Photos album ' . $realAlbumId, ['app' => 'album_notifications']);
-                return null;
-            }
-
-            // Check for new photos using file addition timestamps instead of last_added_photo
-            $photoCount = $this->countNewPhotosInPhotosAlbum($realAlbumId, $yesterdayTimestamp, $userId);
-            
-            if ($photoCount > 0) {
-                $this->logger->debug('Found ' . $photoCount . ' new photos in Photos album ' . $realAlbumId . ' for user ' . $userId, ['app' => 'album_notifications']);
-                
-                return [
-                    'name' => $albumData['name'] ?: 'Unnamed Album',
-                    'source' => 'Photos',
-                    'photo_count' => $photoCount,
-                    'owner' => $albumData['owner'],
-                    'shared' => $albumData['shared']
-                ];
-            }
-        } catch (\Exception $e) {
-            $this->logger->error('Error checking Photos album ' . $albumId . ': ' . $e->getMessage(), ['app' => 'album_notifications']);
+            return [
+                'name' => $albumData['name'] ?: 'Unnamed Album',
+                'source' => 'Photos',
+                'photo_count' => $photoCount,
+                'owner' => $albumData['owner'],
+                'shared' => $albumData['shared']
+            ];
         }
-
-        return null;
+    } catch (\Exception $e) {
+        $this->logger->error('Error checking Photos album ' . $albumId . ': ' . $e->getMessage(), ['app' => 'album_notifications']);
     }
+
+    return null;
+}
 
     private function checkMemoriesAlbumForUpdates(string $albumId, int $yesterdayTimestamp, string $userId): ?array {
-        if (!$this->appManager->isEnabledForUser('memories', $userId)) {
-            $this->logger->debug('Memories app not enabled for user ' . $userId, ['app' => 'album_notifications']);
+    // Get the user object first
+    $user = $this->userManager->get($userId);
+    if (!$user) {
+        $this->logger->debug('User ' . $userId . ' not found', ['app' => 'album_notifications']);
+        return null;
+    }
+
+    if (!$this->appManager->isEnabledForUser('memories', $user)) {
+        $this->logger->debug('Memories app not enabled for user ' . $userId, ['app' => 'album_notifications']);
+        return null;
+    }
+
+    $realAlbumId = str_replace('memories_', '', $albumId);
+
+    try {
+        // Get album info first
+        $albumData = $this->getMemoriesAlbumInfo($realAlbumId, $userId);
+        
+        if (!$albumData) {
+            $this->logger->debug('User ' . $userId . ' does not have access to Memories album ' . $realAlbumId, ['app' => 'album_notifications']);
             return null;
         }
 
-        $realAlbumId = str_replace('memories_', '', $albumId);
-
-        try {
-            // Get album info first
-            $albumData = $this->getMemoriesAlbumInfo($realAlbumId, $userId);
+        // Check for new photos using file addition timestamps
+        $photoCount = $this->countNewPhotosInMemoriesAlbum($realAlbumId, $yesterdayTimestamp, $userId);
+        
+        if ($photoCount > 0) {
+            $this->logger->debug('Found ' . $photoCount . ' new photos in Memories album ' . $realAlbumId . ' for user ' . $userId, ['app' => 'album_notifications']);
             
-            if (!$albumData) {
-                $this->logger->debug('User ' . $userId . ' does not have access to Memories album ' . $realAlbumId, ['app' => 'album_notifications']);
-                return null;
-            }
-
-            // Check for new photos using file addition timestamps
-            $photoCount = $this->countNewPhotosInMemoriesAlbum($realAlbumId, $yesterdayTimestamp, $userId);
-            
-            if ($photoCount > 0) {
-                $this->logger->debug('Found ' . $photoCount . ' new photos in Memories album ' . $realAlbumId . ' for user ' . $userId, ['app' => 'album_notifications']);
-                
-                return [
-                    'name' => $albumData['name'] ?: 'Unnamed Album',
-                    'source' => 'Memories',
-                    'photo_count' => $photoCount,
-                    'owner' => $albumData['owner'],
-                    'shared' => $albumData['shared']
-                ];
-            }
-        } catch (\Exception $e) {
-            $this->logger->error('Error checking Memories album ' . $albumId . ': ' . $e->getMessage(), ['app' => 'album_notifications']);
+            return [
+                'name' => $albumData['name'] ?: 'Unnamed Album',
+                'source' => 'Memories',
+                'photo_count' => $photoCount,
+                'owner' => $albumData['owner'],
+                'shared' => $albumData['shared']
+            ];
         }
-
-        return null;
+    } catch (\Exception $e) {
+        $this->logger->error('Error checking Memories album ' . $albumId . ': ' . $e->getMessage(), ['app' => 'album_notifications']);
     }
+
+    return null;
+}
 
     /**
      * Get Photos album info if user has access (owns OR is shared with)
