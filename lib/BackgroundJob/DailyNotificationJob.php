@@ -42,7 +42,7 @@ class DailyNotificationJob extends TimedJob {
         $this->logger = $logger;
 
         // Set to run daily (24 hours)
-        $this->setInterval(24 * 60 * 60); // 24 hours
+        $this->setInterval(24 * 60 * 60);
     }
 
     protected function run($argument) {
@@ -58,6 +58,7 @@ class DailyNotificationJob extends TimedJob {
 
         // Get all users who have album notifications configured
         $users = $this->getUsersWithNotifications();
+        $this->logger->info('Found ' . count($users) . ' users with notifications configured', ['app' => 'album_notifications']);
 
         foreach ($users as $userId) {
             try {
@@ -76,7 +77,8 @@ class DailyNotificationJob extends TimedJob {
            ->from('preferences')
            ->where($qb->expr()->eq('appid', $qb->createNamedParameter('album_notifications')))
            ->andWhere($qb->expr()->eq('configkey', $qb->createNamedParameter('selected_albums')))
-           ->andWhere($qb->expr()->neq('configvalue', $qb->createNamedParameter('[]')));
+           ->andWhere($qb->expr()->neq('configvalue', $qb->createNamedParameter('[]')))
+           ->andWhere($qb->expr()->neq('configvalue', $qb->createNamedParameter('')));
 
         $result = $qb->executeQuery();
         $users = [];
@@ -100,6 +102,7 @@ class DailyNotificationJob extends TimedJob {
         $selectedAlbums = json_decode($selectedAlbumsJson, true) ?? [];
 
         if (empty($selectedAlbums)) {
+            $this->logger->debug('No selected albums for user ' . $userId, ['app' => 'album_notifications']);
             return;
         }
 
@@ -112,12 +115,16 @@ class DailyNotificationJob extends TimedJob {
             $albumInfo = $this->checkAlbumForUpdates($albumId, $yesterdayTimestamp, $userId);
             if ($albumInfo) {
                 $updatedAlbums[] = $albumInfo;
+                $this->logger->debug('Found updates in album: ' . $albumId . ' for user: ' . $userId, ['app' => 'album_notifications']);
             }
         }
 
         // Send notification email if there are updates
         if (!empty($updatedAlbums)) {
             $this->sendNotificationEmail($user, $updatedAlbums);
+            $this->logger->info('Sent notification to ' . $userId . ' for ' . count($updatedAlbums) . ' updated albums', ['app' => 'album_notifications']);
+        } else {
+            $this->logger->debug('No album updates found for user ' . $userId, ['app' => 'album_notifications']);
         }
     }
 
@@ -133,14 +140,15 @@ class DailyNotificationJob extends TimedJob {
     }
 
     private function checkPhotosAlbumForUpdates(string $albumId, int $yesterdayTimestamp, string $userId): ?array {
-        if (!$this->appManager->isEnabledForUser('photos') || !$this->tableExists('photos_albums')) {
+        if (!$this->appManager->isEnabledForUser('photos', $userId)) {
+            $this->logger->debug('Photos app not enabled for user ' . $userId, ['app' => 'album_notifications']);
             return null;
         }
 
         $realAlbumId = str_replace('photos_', '', $albumId);
 
         try {
-            // Check if user has access to this album (owned OR shared)
+            // Get album info first
             $albumData = $this->getPhotosAlbumInfo($realAlbumId, $userId);
             
             if (!$albumData) {
@@ -148,11 +156,11 @@ class DailyNotificationJob extends TimedJob {
                 return null;
             }
 
-            // Check if last_added_photo is within the last 24 hours
-            $lastAddedPhoto = $albumData['last_added_photo'];
-            if ($lastAddedPhoto && $lastAddedPhoto >= $yesterdayTimestamp) {
-                // Count new photos added
-                $photoCount = $this->countNewPhotosInAlbum('photos', $realAlbumId, $yesterdayTimestamp, $userId);
+            // Check for new photos using file addition timestamps instead of last_added_photo
+            $photoCount = $this->countNewPhotosInPhotosAlbum($realAlbumId, $yesterdayTimestamp, $userId);
+            
+            if ($photoCount > 0) {
+                $this->logger->debug('Found ' . $photoCount . ' new photos in Photos album ' . $realAlbumId . ' for user ' . $userId, ['app' => 'album_notifications']);
                 
                 return [
                     'name' => $albumData['name'] ?: 'Unnamed Album',
@@ -170,14 +178,15 @@ class DailyNotificationJob extends TimedJob {
     }
 
     private function checkMemoriesAlbumForUpdates(string $albumId, int $yesterdayTimestamp, string $userId): ?array {
-        if (!$this->appManager->isEnabledForUser('memories')) {
+        if (!$this->appManager->isEnabledForUser('memories', $userId)) {
+            $this->logger->debug('Memories app not enabled for user ' . $userId, ['app' => 'album_notifications']);
             return null;
         }
 
         $realAlbumId = str_replace('memories_', '', $albumId);
 
         try {
-            // Check if user has access to this album (owned OR shared)
+            // Get album info first
             $albumData = $this->getMemoriesAlbumInfo($realAlbumId, $userId);
             
             if (!$albumData) {
@@ -185,11 +194,11 @@ class DailyNotificationJob extends TimedJob {
                 return null;
             }
 
-            // Check if last_added_photo is within the last 24 hours
-            $lastAddedPhoto = $albumData['last_added_photo'];
-            if ($lastAddedPhoto && $lastAddedPhoto >= $yesterdayTimestamp) {
-                // Count new photos added
-                $photoCount = $this->countNewPhotosInAlbum('memories', $realAlbumId, $yesterdayTimestamp, $userId);
+            // Check for new photos using file addition timestamps
+            $photoCount = $this->countNewPhotosInMemoriesAlbum($realAlbumId, $yesterdayTimestamp, $userId);
+            
+            if ($photoCount > 0) {
+                $this->logger->debug('Found ' . $photoCount . ' new photos in Memories album ' . $realAlbumId . ' for user ' . $userId, ['app' => 'album_notifications']);
                 
                 return [
                     'name' => $albumData['name'] ?: 'Unnamed Album',
@@ -210,9 +219,15 @@ class DailyNotificationJob extends TimedJob {
      * Get Photos album info if user has access (owns OR is shared with)
      */
     private function getPhotosAlbumInfo(string $albumId, string $userId): ?array {
+        // Check if photos_albums table exists
+        if (!$this->tableExists('photos_albums')) {
+            $this->logger->debug('photos_albums table does not exist', ['app' => 'album_notifications']);
+            return null;
+        }
+
         // First check if user owns the album
         $qb = $this->db->getQueryBuilder();
-        $qb->select('name', 'last_added_photo', 'user')
+        $qb->select('name', 'user')
            ->from('photos_albums')
            ->where($qb->expr()->eq('album_id', $qb->createNamedParameter($albumId)))
            ->andWhere($qb->expr()->eq('user', $qb->createNamedParameter($userId)));
@@ -224,7 +239,6 @@ class DailyNotificationJob extends TimedJob {
         if ($albumData) {
             return [
                 'name' => $albumData['name'],
-                'last_added_photo' => $albumData['last_added_photo'],
                 'owner' => $albumData['user'],
                 'shared' => false
             ];
@@ -234,7 +248,7 @@ class DailyNotificationJob extends TimedJob {
         if ($this->tableExists('photos_albums_collabs')) {
             // Check direct user sharing
             $qb = $this->db->getQueryBuilder();
-            $qb->select('pa.name', 'pa.last_added_photo', 'pa.user')
+            $qb->select('pa.name', 'pa.user')
                ->from('photos_albums', 'pa')
                ->innerJoin('pa', 'photos_albums_collabs', 'pac', 'pa.album_id = pac.album_id')
                ->where($qb->expr()->eq('pa.album_id', $qb->createNamedParameter($albumId)))
@@ -248,7 +262,6 @@ class DailyNotificationJob extends TimedJob {
             if ($albumData) {
                 return [
                     'name' => $albumData['name'],
-                    'last_added_photo' => $albumData['last_added_photo'],
                     'owner' => $albumData['user'],
                     'shared' => true
                 ];
@@ -257,7 +270,7 @@ class DailyNotificationJob extends TimedJob {
             // Check group-based sharing
             if ($this->tableExists('group_user')) {
                 $qb = $this->db->getQueryBuilder();
-                $qb->select('pa.name', 'pa.last_added_photo', 'pa.user')
+                $qb->select('pa.name', 'pa.user')
                    ->from('photos_albums', 'pa')
                    ->innerJoin('pa', 'photos_albums_collabs', 'pac', 'pa.album_id = pac.album_id')
                    ->innerJoin('pac', 'group_user', 'gu', 'pac.collaborator_id = gu.gid')
@@ -272,7 +285,6 @@ class DailyNotificationJob extends TimedJob {
                 if ($albumData) {
                     return [
                         'name' => $albumData['name'],
-                        'last_added_photo' => $albumData['last_added_photo'],
                         'owner' => $albumData['user'],
                         'shared' => true
                     ];
@@ -297,7 +309,7 @@ class DailyNotificationJob extends TimedJob {
 
             // First check if user owns the album
             $qb = $this->db->getQueryBuilder();
-            $qb->select('name', 'last_added_photo', 'user')
+            $qb->select('name', 'user')
                ->from($tableName)
                ->where($qb->expr()->eq('album_id', $qb->createNamedParameter($albumId)))
                ->andWhere($qb->expr()->eq('user', $qb->createNamedParameter($userId)));
@@ -309,7 +321,6 @@ class DailyNotificationJob extends TimedJob {
             if ($albumData) {
                 return [
                     'name' => $albumData['name'],
-                    'last_added_photo' => $albumData['last_added_photo'],
                     'owner' => $albumData['user'],
                     'shared' => false
                 ];
@@ -320,7 +331,7 @@ class DailyNotificationJob extends TimedJob {
             if ($this->tableExists($collabTableName)) {
                 // Check direct user sharing
                 $qb = $this->db->getQueryBuilder();
-                $qb->select('ma.name', 'ma.last_added_photo', 'ma.user')
+                $qb->select('ma.name', 'ma.user')
                    ->from($tableName, 'ma')
                    ->innerJoin('ma', $collabTableName, 'mac', 'ma.album_id = mac.album_id')
                    ->where($qb->expr()->eq('ma.album_id', $qb->createNamedParameter($albumId)))
@@ -334,7 +345,6 @@ class DailyNotificationJob extends TimedJob {
                 if ($albumData) {
                     return [
                         'name' => $albumData['name'],
-                        'last_added_photo' => $albumData['last_added_photo'],
                         'owner' => $albumData['user'],
                         'shared' => true
                     ];
@@ -343,7 +353,7 @@ class DailyNotificationJob extends TimedJob {
                 // Check group-based sharing
                 if ($this->tableExists('group_user')) {
                     $qb = $this->db->getQueryBuilder();
-                    $qb->select('ma.name', 'ma.last_added_photo', 'ma.user')
+                    $qb->select('ma.name', 'ma.user')
                        ->from($tableName, 'ma')
                        ->innerJoin('ma', $collabTableName, 'mac', 'ma.album_id = mac.album_id')
                        ->innerJoin('mac', 'group_user', 'gu', 'mac.collaborator_id = gu.gid')
@@ -358,7 +368,6 @@ class DailyNotificationJob extends TimedJob {
                     if ($albumData) {
                         return [
                             'name' => $albumData['name'],
-                            'last_added_photo' => $albumData['last_added_photo'],
                             'owner' => $albumData['user'],
                             'shared' => true
                         ];
@@ -372,45 +381,76 @@ class DailyNotificationJob extends TimedJob {
         return null;
     }
 
-    private function countNewPhotosInAlbum(string $source, string $albumId, int $yesterdayTimestamp, string $userId): int {
+    private function countNewPhotosInPhotosAlbum(string $albumId, int $yesterdayTimestamp, string $userId): int {
         try {
-            if ($source === 'photos' && $this->tableExists('photos_albums_files')) {
+            if (!$this->tableExists('photos_albums_files')) {
+                $this->logger->debug('photos_albums_files table does not exist', ['app' => 'album_notifications']);
+                return 0;
+            }
+
+            // Check for files added to the album in the last 24 hours
+            $qb = $this->db->getQueryBuilder();
+            $qb->select($qb->createFunction('COUNT(*) as count'))
+               ->from('photos_albums_files')
+               ->where($qb->expr()->eq('album_id', $qb->createNamedParameter($albumId)));
+
+            // If there's an added_at field, use it
+            if ($this->columnExists('photos_albums_files', 'added_at')) {
+                $qb->andWhere($qb->expr()->gte('added_at', $qb->createNamedParameter($yesterdayTimestamp)));
+            } else {
+                // Fallback: join with filecache to check mtime
+                $qb->innerJoin('paf', 'filecache', 'fc', 'paf.file_id = fc.fileid')
+                   ->andWhere($qb->expr()->gte('fc.mtime', $qb->createNamedParameter($yesterdayTimestamp)))
+                   // Only include files that the user can access
+                   ->andWhere($qb->expr()->like('fc.path', $qb->createNamedParameter('files/%')));
+            }
+
+            $result = $qb->executeQuery();
+            $count = $result->fetchOne();
+            $result->closeCursor();
+            
+            return (int)$count;
+        } catch (\Exception $e) {
+            $this->logger->error('Error counting new photos in Photos album ' . $albumId . ': ' . $e->getMessage(), ['app' => 'album_notifications']);
+            return 0;
+        }
+    }
+
+    private function countNewPhotosInMemoriesAlbum(string $albumId, int $yesterdayTimestamp, string $userId): int {
+        try {
+            $possibleTables = ['memories_albums_files', 'oc_memories_albums_files'];
+            
+            foreach ($possibleTables as $tableName) {
+                if (!$this->tableExists($tableName)) {
+                    continue;
+                }
+
                 $qb = $this->db->getQueryBuilder();
-                $qb->select($qb->createFunction('COUNT(*)'))
-                   ->from('photos_albums_files')
-                   ->where($qb->expr()->eq('album_id', $qb->createNamedParameter($albumId)))
-                   ->andWhere($qb->expr()->gte('added_at', $qb->createNamedParameter($yesterdayTimestamp)));
+                $qb->select($qb->createFunction('COUNT(*) as count'))
+                   ->from($tableName)
+                   ->where($qb->expr()->eq('album_id', $qb->createNamedParameter($albumId)));
+
+                // If there's an added_at field, use it
+                if ($this->columnExists($tableName, 'added_at')) {
+                    $qb->andWhere($qb->expr()->gte('added_at', $qb->createNamedParameter($yesterdayTimestamp)));
+                } else {
+                    // Fallback: join with filecache to check mtime
+                    $qb->innerJoin('maf', 'filecache', 'fc', 'maf.file_id = fc.fileid')
+                       ->andWhere($qb->expr()->gte('fc.mtime', $qb->createNamedParameter($yesterdayTimestamp)))
+                       ->andWhere($qb->expr()->like('fc.path', $qb->createNamedParameter('files/%')));
+                }
 
                 $result = $qb->executeQuery();
                 $count = $result->fetchOne();
                 $result->closeCursor();
                 
                 return (int)$count;
-            } elseif ($source === 'memories') {
-                // Try to count from memories album files table
-                $possibleTables = ['memories_albums_files', 'oc_memories_albums_files'];
-                
-                foreach ($possibleTables as $tableName) {
-                    if ($this->tableExists($tableName)) {
-                        $qb = $this->db->getQueryBuilder();
-                        $qb->select($qb->createFunction('COUNT(*)'))
-                           ->from($tableName)
-                           ->where($qb->expr()->eq('album_id', $qb->createNamedParameter($albumId)))
-                           ->andWhere($qb->expr()->gte('added_at', $qb->createNamedParameter($yesterdayTimestamp)));
-
-                        $result = $qb->executeQuery();
-                        $count = $result->fetchOne();
-                        $result->closeCursor();
-                        
-                        return (int)$count;
-                    }
-                }
             }
         } catch (\Exception $e) {
-            $this->logger->error('Error counting new photos in ' . $source . ' album ' . $albumId . ': ' . $e->getMessage(), ['app' => 'album_notifications']);
+            $this->logger->error('Error counting new photos in Memories album ' . $albumId . ': ' . $e->getMessage(), ['app' => 'album_notifications']);
         }
 
-        return 1; // Default to 1 if we can't count but know there are updates
+        return 0;
     }
 
     private function sendNotificationEmail(IUser $user, array $updatedAlbums) {
@@ -534,6 +574,19 @@ class DailyNotificationJob extends TimedJob {
         try {
             $qb = $this->db->getQueryBuilder();
             $qb->select($qb->createFunction('1'))
+               ->from($tableName)
+               ->setMaxResults(1);
+            $qb->executeQuery()->closeCursor();
+            return true;
+        } catch (\Exception $e) {
+            return false;
+        }
+    }
+
+    private function columnExists(string $tableName, string $columnName): bool {
+        try {
+            $qb = $this->db->getQueryBuilder();
+            $qb->select($columnName)
                ->from($tableName)
                ->setMaxResults(1);
             $qb->executeQuery()->closeCursor();
